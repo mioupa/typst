@@ -6,15 +6,18 @@ mod book;
 mod exceptions;
 mod variant;
 
-pub use self::book::{Coverage, FontBook, FontFlags, FontInfo};
+pub use self::book::{Coverage, FontBook, FontFlags, FontInfo, VariationAxisInfo};
 pub use self::variant::{FontStretch, FontStyle, FontVariant, FontWeight};
+
+// Re-export the VariationCoord type defined in this module.
+// (It's defined directly in mod.rs, not in a sub-module.)
 
 use std::cell::OnceCell;
 use std::fmt::{self, Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
-use ttf_parser::{GlyphId, name_id};
+use ttf_parser::{GlyphId, Tag, name_id};
 
 use self::book::find_name;
 use crate::foundations::{Bytes, Cast};
@@ -29,6 +32,24 @@ use crate::text::{
 #[derive(Clone)]
 pub struct Font(Arc<FontInner>);
 
+/// A resolved variation coordinate for a variable font axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariationCoord {
+    /// The four-byte axis tag (e.g. `wght`, `wdth`).
+    pub tag: [u8; 4],
+    /// The value to set on this axis.
+    pub value: f32,
+}
+
+impl Eq for VariationCoord {}
+
+impl std::hash::Hash for VariationCoord {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.tag.hash(state);
+        self.value.to_bits().hash(state);
+    }
+}
+
 /// The internal representation of a [`Font`].
 struct FontInner {
     /// The font's index in the buffer.
@@ -37,6 +58,8 @@ struct FontInner {
     info: FontInfo,
     /// The font's metrics.
     metrics: FontMetrics,
+    /// Applied variation coordinates (empty for non-variable or default-instance fonts).
+    variation_coords: Vec<VariationCoord>,
     /// The underlying ttf-parser face.
     ttf: ttf_parser::Face<'static>,
     /// The underlying rustybuzz face.
@@ -54,6 +77,17 @@ struct FontInner {
 impl Font {
     /// Parse a font from data and collection index.
     pub fn new(data: Bytes, index: u32) -> Option<Self> {
+        Self::new_with_variations(data, index, &[])
+    }
+
+    /// Parse a font from data and collection index, applying the given
+    /// variation coordinates. For variable fonts, this sets the axis values
+    /// via `rustybuzz::Face::set_variation()`, which affects shaping.
+    pub fn new_with_variations(
+        data: Bytes,
+        index: u32,
+        variations: &[VariationCoord],
+    ) -> Option<Self> {
         // Safety:
         // - The slices's location is stable in memory:
         //   - We don't move the underlying vector
@@ -64,11 +98,26 @@ impl Font {
             unsafe { std::slice::from_raw_parts(data.as_ptr(), data.len()) };
 
         let ttf = ttf_parser::Face::parse(slice, index).ok()?;
-        let rusty = rustybuzz::Face::from_slice(slice, index)?;
+        let mut rusty = rustybuzz::Face::from_slice(slice, index)?;
+
+        // Apply variation coordinates to the rustybuzz face.
+        let variation_coords: Vec<VariationCoord> = variations.to_vec();
+        for coord in &variation_coords {
+            rusty.set_variation(Tag::from_bytes(&coord.tag), coord.value);
+        }
+
         let metrics = FontMetrics::from_ttf(&ttf);
         let info = FontInfo::from_ttf(&ttf)?;
 
-        Some(Self(Arc::new(FontInner { data, index, info, metrics, ttf, rusty })))
+        Some(Self(Arc::new(FontInner {
+            data,
+            index,
+            info,
+            metrics,
+            variation_coords,
+            ttf,
+            rusty,
+        })))
     }
 
     /// Parse all fonts in the given data.
@@ -85,6 +134,11 @@ impl Font {
     /// The font's index in the buffer.
     pub fn index(&self) -> u32 {
         self.0.index
+    }
+
+    /// The variation coordinates applied to this font.
+    pub fn variation_coords(&self) -> &[VariationCoord] {
+        &self.0.variation_coords
     }
 
     /// The font's metadata.
@@ -195,6 +249,7 @@ impl Hash for Font {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.data.hash(state);
         self.0.index.hash(state);
+        self.0.variation_coords.hash(state);
     }
 }
 
@@ -208,7 +263,9 @@ impl Eq for Font {}
 
 impl PartialEq for Font {
     fn eq(&self, other: &Self) -> bool {
-        self.0.data == other.0.data && self.0.index == other.0.index
+        self.0.data == other.0.data
+            && self.0.index == other.0.index
+            && self.0.variation_coords == other.0.variation_coords
     }
 }
 

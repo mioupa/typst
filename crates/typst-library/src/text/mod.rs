@@ -757,6 +757,30 @@ pub struct TextElem {
     #[ghost]
     pub features: FontFeatures,
 
+    /// Variable font axis values to apply.
+    ///
+    /// This allows controlling the axes of variable fonts beyond the standard
+    /// `weight` and `stretch` parameters. The value is a dictionary mapping
+    /// four-character axis tags to their values.
+    ///
+    /// Common axes include:
+    /// - `opsz`: Optical size
+    /// - `slnt`: Slant
+    /// - `ital`: Italic
+    /// - Custom axes defined by the font designer (uppercase tags, e.g. `CASL`)
+    ///
+    /// Note: The `wght` (weight) and `wdth` (width) axes are automatically
+    /// derived from the `weight` and `stretch` parameters respectively. Values
+    /// set here will override the automatic mapping.
+    ///
+    /// ```example
+    /// // Set optical size and slant for a variable font.
+    /// #set text(axes: (opsz: 12, slnt: -12))
+    /// ```
+    #[fold]
+    #[ghost]
+    pub axes: FontAxes,
+
     /// Content in which all text is styled according to the other arguments.
     #[external]
     #[required]
@@ -1341,6 +1365,89 @@ impl Fold for FontFeatures {
     }
 }
 
+/// Variable font axis settings.
+#[derive(Debug, Default, Clone, Eq, PartialEq, Hash)]
+pub struct FontAxes(pub Vec<(Tag, FloatOrd)>);
+
+/// An f32 wrapper that provides Hash and Eq via bit representation.
+#[derive(Debug, Copy, Clone)]
+pub struct FloatOrd(pub f32);
+
+impl PartialEq for FloatOrd {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for FloatOrd {}
+
+impl std::hash::Hash for FloatOrd {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
+cast! {
+    FontAxes,
+    self => self.0
+        .into_iter()
+        .map(|(tag, val)| {
+            let bytes = tag.to_bytes();
+            let key = std::str::from_utf8(&bytes).unwrap_or_default();
+            (key.into(), val.0.into_value())
+        })
+        .collect::<Dict>()
+        .into_value(),
+    values: Dict => Self(values
+        .into_iter()
+        .enumerate()
+        .map(|(i, (k, v))| Ok((
+            k.clone().into_value().cast::<Tag>().hint(tag_hint_helper(i, &k))?,
+            FloatOrd(v.cast::<f64>().hint(tag_hint_helper(i, &k))? as f32)
+        )))
+        .collect::<HintedStrResult<_>>()?),
+}
+
+impl Fold for FontAxes {
+    fn fold(self, outer: Self) -> Self {
+        Self(self.0.fold(outer.0))
+    }
+}
+
+/// Collect the variable font axis values from styles and produce variation
+/// coordinates suitable for applying to a font.
+pub fn variation_coords(
+    styles: StyleChain,
+) -> Vec<VariationCoord> {
+    let mut coords = vec![];
+
+    // Map the standard weight and stretch properties to wght/wdth axes.
+    let weight = styles.get(TextElem::weight);
+    coords.push(VariationCoord {
+        tag: *b"wght",
+        value: weight.to_number() as f32,
+    });
+
+    let stretch = styles.get(TextElem::stretch);
+    coords.push(VariationCoord {
+        tag: *b"wdth",
+        value: (stretch.to_ratio().get() * 100.0) as f32,
+    });
+
+    // Add any explicit axes set by the user (these override the above).
+    for (tag, value) in styles.get_cloned(TextElem::axes).0 {
+        let tag_bytes = tag.to_bytes();
+        // Remove any existing coord with the same tag (user override).
+        coords.retain(|c| c.tag != tag_bytes);
+        coords.push(VariationCoord {
+            tag: tag_bytes,
+            value: value.0,
+        });
+    }
+
+    coords
+}
+
 /// Collect the OpenType features to apply.
 pub fn features(styles: StyleChain) -> Vec<Feature> {
     let mut tags = vec![];
@@ -1532,26 +1639,12 @@ pub fn is_default_ignorable(c: char) -> bool {
 fn check_font_list(engine: &mut Engine, list: &Spanned<FontList>) {
     let book = engine.world.book();
     for family in &list.v {
-        match book.select_family(family.as_str()).next() {
-            Some(index) => {
-                if book
-                    .info(index)
-                    .is_some_and(|x| x.flags.contains(FontFlags::VARIABLE))
-                {
-                    engine.sink.warn(warning!(
-                        list.span,
-                        "variable fonts are not currently supported and may render \
-                         incorrectly";
-                        hint: "try installing a static version of \"{}\" instead",
-                            family.as_str();
-                    ))
-                }
-            }
-            None => engine.sink.warn(warning!(
+        if book.select_family(family.as_str()).next().is_none() {
+            engine.sink.warn(warning!(
                 list.span,
                 "unknown font family: {}",
                 family.as_str(),
-            )),
+            ));
         }
     }
 }

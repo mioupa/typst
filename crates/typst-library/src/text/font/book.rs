@@ -187,6 +187,39 @@ pub struct FontInfo {
     pub flags: FontFlags,
     /// The unicode coverage of the font.
     pub coverage: Coverage,
+    /// The variation axes available in this font (empty for non-variable fonts).
+    pub variation_axes: Vec<VariationAxisInfo>,
+}
+
+/// Information about a single variation axis of a variable font.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VariationAxisInfo {
+    /// The four-byte axis tag (e.g. `wght`, `wdth`, `ital`, `slnt`, `opsz`).
+    pub tag: [u8; 4],
+    /// The minimum value of the axis.
+    pub min: f32,
+    /// The default value of the axis.
+    pub default: f32,
+    /// The maximum value of the axis.
+    pub max: f32,
+}
+
+impl Eq for VariationAxisInfo {}
+
+impl std::hash::Hash for VariationAxisInfo {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.tag.hash(state);
+        self.min.to_bits().hash(state);
+        self.default.to_bits().hash(state);
+        self.max.to_bits().hash(state);
+    }
+}
+
+impl VariationAxisInfo {
+    /// Whether the given value falls within this axis's range.
+    pub fn contains(&self, value: f32) -> bool {
+        value >= self.min && value <= self.max
+    }
 }
 
 bitflags::bitflags! {
@@ -301,11 +334,27 @@ impl FontInfo {
             flags.insert(FontFlags::SERIF);
         }
 
+        // Read variation axes from the fvar table if this is a variable font.
+        let variation_axes = if ttf.is_variable() {
+            ttf.variation_axes()
+                .into_iter()
+                .map(|axis| VariationAxisInfo {
+                    tag: axis.tag.to_bytes(),
+                    min: axis.min_value,
+                    default: axis.def_value,
+                    max: axis.max_value,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
         Some(FontInfo {
             family,
             variant,
             flags,
             coverage: Coverage::from_vec(codepoints),
+            variation_axes,
         })
     }
 
