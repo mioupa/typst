@@ -97,15 +97,19 @@ impl Font {
         let slice: &'static [u8] =
             unsafe { std::slice::from_raw_parts(data.as_ptr(), data.len()) };
 
-        let ttf = ttf_parser::Face::parse(slice, index).ok()?;
+        let mut ttf = ttf_parser::Face::parse(slice, index).ok()?;
         let mut rusty = rustybuzz::Face::from_slice(slice, index)?;
 
-        // Apply variation coordinates to the rustybuzz face.
+        // Apply variation coordinates to both faces.
         let variation_coords: Vec<VariationCoord> = variations.to_vec();
         for coord in &variation_coords {
-            rusty.set_variation(Tag::from_bytes(&coord.tag), coord.value);
+            let tag = Tag::from_bytes(&coord.tag);
+            ttf.set_variation(tag, coord.value);
+            rusty.set_variation(tag, coord.value);
         }
 
+        // Compute metrics after variation application so that ascender,
+        // descender, etc. reflect the chosen axis values.
         let metrics = FontMetrics::from_ttf(&ttf);
         let info = FontInfo::from_ttf(&ttf)?;
 

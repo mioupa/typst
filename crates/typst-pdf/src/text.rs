@@ -77,6 +77,14 @@ fn convert_font(
 
 #[comemo::memoize]
 fn build_font(typst_font: Font) -> SourceResult<krilla::text::Font> {
+    // TODO: krilla does not support variable fonts. When the Typst font has
+    // variation coordinates set, the glyph IDs produced by shaping (via
+    // rustybuzz) are correct for the chosen variation, but the glyph outlines
+    // embedded in the PDF will use the font's default instance. To fully
+    // support variable fonts in PDF output, either:
+    //   1. krilla needs to add variable font support, or
+    //   2. we need to "instance" the font (subset it to a static instance)
+    //      before passing it to krilla.
     let font_data: Arc<dyn AsRef<[u8]> + Send + Sync> =
         Arc::new(typst_font.data().clone());
 

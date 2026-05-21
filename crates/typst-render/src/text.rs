@@ -51,14 +51,16 @@ fn render_outline_glyph(
     let ppem = text.size.to_f32() * ts.sy;
 
     // Render a glyph directly as a path. This only happens when the fast glyph
-    // rasterization can't be used due to very large text size or weird
-    // scale/skewing transforms.
+    // rasterization can't be used due to very large text size, weird
+    // scale/skewing transforms, or variable font variations (pixglyph doesn't
+    // support variable fonts, but ttf-parser's outline_glyph does via gvar).
     if ppem > 100.0
         || ppem < 0.0
         || ts.kx != 0.0
         || ts.ky != 0.0
         || ts.sx != ts.sy
         || text.stroke.is_some()
+        || !text.font.variation_coords().is_empty()
     {
         let path = {
             let mut builder = WrappedPathBuilder(sk::PathBuilder::new());

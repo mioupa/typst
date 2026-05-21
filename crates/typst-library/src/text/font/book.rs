@@ -7,6 +7,7 @@ use ttf_parser::{PlatformId, Tag, name_id};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::exceptions::find_exception;
+use crate::layout::Ratio;
 use crate::text::{
     Font, FontStretch, FontStyle, FontVariant, FontWeight, is_default_ignorable,
 };
@@ -161,8 +162,40 @@ impl FontBook {
                     )
                 }),
                 current.variant.style.distance(variant.style),
-                current.variant.stretch.distance(variant.stretch),
-                current.variant.weight.distance(variant.weight),
+                // For variable fonts, if the requested stretch falls within
+                // the wdth axis range, treat it as a perfect match.
+                if current.flags.contains(FontFlags::VARIABLE) {
+                    let wdth_value =
+                        (variant.stretch.to_ratio().get() * 100.0) as f32;
+                    current
+                        .variation_axes
+                        .iter()
+                        .find(|a| a.tag == *b"wdth")
+                        .filter(|a| a.contains(wdth_value))
+                        .map_or_else(
+                            || current.variant.stretch.distance(variant.stretch),
+                            |_| Ratio::zero(),
+                        )
+                } else {
+                    current.variant.stretch.distance(variant.stretch)
+                },
+                // For variable fonts, if the requested weight falls within
+                // the wght axis range, treat it as a perfect match.
+                if current.flags.contains(FontFlags::VARIABLE) {
+                    current
+                        .variation_axes
+                        .iter()
+                        .find(|a| a.tag == *b"wght")
+                        .filter(|a| {
+                            a.contains(variant.weight.to_number() as f32)
+                        })
+                        .map_or_else(
+                            || current.variant.weight.distance(variant.weight),
+                            |_| 0,
+                        )
+                } else {
+                    current.variant.weight.distance(variant.weight)
+                },
             );
 
             if best_key.is_none_or(|b| key < b) {

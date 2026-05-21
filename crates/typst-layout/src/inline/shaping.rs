@@ -15,7 +15,8 @@ use typst_library::layout::{Abs, Dir, Em, Frame, FrameItem, Point, Rel, Size};
 use typst_library::model::{JustificationLimits, ParElem};
 use typst_library::text::{
     Font, FontFamily, FontVariant, Glyph, Lang, Region, ShiftSettings, TextEdgeBounds,
-    TextElem, TextItem, families, features, is_default_ignorable, language, variant,
+    TextElem, TextItem, VariationCoord, families, features, is_default_ignorable,
+    language, variant, variation_coords,
 };
 use typst_utils::SliceExt;
 use unicode_bidi::{BidiInfo, Level as BidiLevel};
@@ -798,6 +799,7 @@ fn shape<'a>(
         styles,
         variant: variant(styles),
         features: features(styles),
+        variation_coords: variation_coords(styles),
         fallback: styles.get(TextElem::fallback),
         dir,
         shift_settings,
@@ -836,6 +838,7 @@ struct ShapingContext<'a> {
     size: Abs,
     variant: FontVariant,
     features: Vec<rustybuzz::Feature>,
+    variation_coords: Vec<VariationCoord>,
     fallback: bool,
     dir: Dir,
     shift_settings: Option<ShiftSettings>,
@@ -945,12 +948,26 @@ fn shape_segment<'a>(
         return;
     }
 
-    let Some((font, covers)) =
+    let Some((base_font, covers)) =
         get_font_and_covers(ctx, text, families.by_ref(), |ctx, text, font| {
             shape_tofus(ctx, base, text, font);
         })
     else {
         return;
+    };
+
+    // Apply variation coordinates to the font if any are set.
+    let font = if !ctx.variation_coords.is_empty()
+        && base_font.info().flags.contains(typst_library::text::FontFlags::VARIABLE)
+    {
+        Font::new_with_variations(
+            base_font.data().clone(),
+            base_font.index(),
+            &ctx.variation_coords,
+        )
+        .unwrap_or(base_font)
+    } else {
+        base_font
     };
 
     // Fill the buffer with our text.
